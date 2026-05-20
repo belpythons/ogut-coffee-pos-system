@@ -36,6 +36,8 @@ export default function CashierPage() {
   const [isCheckingOut, setIsCheckingOut] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isRevenueModalOpen, setIsRevenueModalOpen] = useState(false);
+  const [customerName, setCustomerName] = useState('');
+  const [tableNumber, setTableNumber] = useState('');
 
   const debouncedSearch = useDebounce(searchQuery, 300);
 
@@ -88,10 +90,12 @@ export default function CashierPage() {
     if (cart.length === 0) return;
     setIsCheckingOut(true);
     
-    const result = await processCheckout(cart, totalAmount, paymentMethod);
+    const result = await processCheckout(cart, totalAmount, paymentMethod, customerName, tableNumber);
     if (result.success) {
       alert(`Transaksi Berhasil! Total: Rp ${totalAmount.toLocaleString('id-ID')}`);
       setCart([]);
+      setCustomerName('');
+      setTableNumber('');
     } else {
       alert("Gagal memproses transaksi: " + result.error);
     }
@@ -187,6 +191,10 @@ export default function CashierPage() {
         setPaymentMethod={setPaymentMethod}
         handleCheckout={handleCheckout}
         isCheckingOut={isCheckingOut}
+        customerName={customerName}
+        setCustomerName={setCustomerName}
+        tableNumber={tableNumber}
+        setTableNumber={setTableNumber}
       />
 
       {/* MODAL REKAP HARIAN */}

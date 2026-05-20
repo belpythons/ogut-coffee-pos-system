@@ -1,14 +1,18 @@
 import { supabase } from '@/lib/supabaseClient';
 
-export const processCheckout = async (cartItems, totalAmount, paymentMethod) => {
+export const processCheckout = async (cartItems, totalAmount, paymentMethod, customerName = '', tableNumber = '') => {
   try {
     // 1. Catat Header Transaksi ke Supabase
+    const transactionPayload = { 
+      total_amount: totalAmount,
+      payment_method: paymentMethod,
+    };
+    if (customerName.trim()) transactionPayload.customer_name = customerName.trim();
+    if (tableNumber.trim()) transactionPayload.table_number = tableNumber.trim();
+
     const { data: trxData, error: trxError } = await supabase
       .from('transactions')
-      .insert([{ 
-        total_amount: totalAmount,
-        payment_method: paymentMethod
-      }])
+      .insert([transactionPayload])
       .select('id')
       .single();
 
