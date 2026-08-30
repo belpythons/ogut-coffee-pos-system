@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { supabase } from '@/lib/supabaseClient';
+import { apiClient } from '@/lib/apiClient';
 import { logActivity } from '@/lib/logger';
 import { useAuth } from '@/features/auth/context/AuthContext';
 import { UserPlus, Shield, User as UserIcon, Lock } from 'lucide-react';
@@ -17,21 +17,18 @@ export default function UserManager({ onSuccess }) {
     setIsLoading(true);
 
     try {
-      const { data: authData, error: authError } = await supabase.auth.signUp({
+      const response = await apiClient.post('/api/admin/create-user', {
         email: formData.email,
         password: formData.password,
+        role: formData.role
       });
 
-      if (authError) throw authError;
-
-      if (authData.user) {
-        const { error: roleError } = await supabase.from('user_roles').insert([
-          { user_id: authData.user.id, role: formData.role }
-        ]);
-        if (roleError) throw roleError;
+      const resData = await response.json();
+      if (!response.ok) {
+        throw new Error(resData.error || 'Terjadi kesalahan saat membuat staf baru');
       }
 
-      await logActivity(user.id, 'CREATE_USER', `Mendaftarkan staf baru: ${formData.email}`);
+      await logActivity(user?.id, 'CREATE_USER', `Mendaftarkan staf baru: ${formData.email}`);
       alert('Akun staf berhasil dibuat!');
       setFormData({ email: '', password: '', role: 'kasir' });
       if (onSuccess) onSuccess(); 
