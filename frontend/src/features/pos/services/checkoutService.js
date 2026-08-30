@@ -1,66 +1,89 @@
 import { supabase } from '@/lib/supabaseClient';
+import { logActivity } from '@/lib/logger';
+
 
 export const processCheckout = async (cartItems, totalAmount, paymentMethod, customerName = '', tableNumber = '') => {
+  if (import.meta.env.DEV) {
+    console.log("Checkout: Initiating transaction process...", { cartItems, totalAmount, paymentMethod, customerName, tableNumber });
+  }
   try {
-    // 0. Validasi stok sebelum checkout
-    const insufficientStockItems = cartItems.filter(item =>
-      item.max_servings !== undefined && (item.max_servings <= 0 || item.qty > item.max_servings)
-    );
-    if (insufficientStockItems.length > 0) {
-      const details = insufficientStockItems.map(i => 
-        i.max_servings <= 0 
-          ? `${i.name} (HABIS)` 
-          : `${i.name} (Tersedia: ${i.max_servings}, Dipesan: ${i.qty})`
-      ).join(', ');
-      throw new Error(`Stok bahan tidak mencukupi untuk menu: ${details}`);
-    }
-
-    // 1. Catat Header Transaksi ke Supabase
-    const transactionPayload = { 
-      total_amount: totalAmount,
-      payment_method: paymentMethod,
-    };
-    if (customerName.trim()) transactionPayload.customer_name = customerName.trim();
-    if (tableNumber.trim()) transactionPayload.table_number = tableNumber.trim();
-
-    const { data: trxData, error: trxError } = await supabase
-      .from('transactions')
-      .insert([transactionPayload])
-      .select('id')
-      .single();
-
-    if (trxError) throw trxError;
-
-    // 2. Siapkan detail pesanan (termasuk kalkulasi profit statis)
-    const transactionId = trxData.id;
-    const orderDetails = cartItems.map(item => ({
-      transaction_id: transactionId,
+    // Siapkan payload produk untuk dikirim ke RPC database
+    const itemsPayload = cartItems.map(item => ({
       product_id: item.id,
-      quantity: item.qty,
-      subtotal: (item.price || 0) * item.qty,
-      // profit_margin = (harga jual - harga modal) * qty
-      profit_margin: ((item.price || 0) - (item.cost_price || 0)) * item.qty
+      qty: item.qty,
+      price: item.price || 0,
+      cost_price: item.cost_price || 0
     }));
 
-    // 3. Catat Item Transaksi (Bulk Insert)
-    const { error: itemsError } = await supabase
-      .from('transaction_items')
-      .insert(orderDetails);
+    if (import.meta.env.DEV) {
+      console.log("Checkout: Prepared items payload for Database RPC:", itemsPayload);
+    }
 
-    if (itemsError) throw itemsError;
+    // Panggil stored procedure process_checkout secara atomik
+    const { data, error } = await supabase.rpc('process_checkout', {
+      p_items: itemsPayload,
+      p_total: totalAmount,
+      p_payment: paymentMethod,
+      p_customer: customerName.trim() || null,
+      p_table: tableNumber.trim() || null
+    });
+
+    if (error) {
+      console.error("Checkout: Database RPC returned a hard error:", error);
+      throw error;
+    }
+
+    if (import.meta.env.DEV) {
+      console.log("Checkout: Database RPC response received:", data);
+    }
+
+    // Periksa apakah stored procedure mengembalikan status sukses
+    if (data && !data.success) {
+      console.warn("Checkout: Database validation failed (e.g., out of stock):", data.error);
+      throw new Error(data.error || 'Gagal memproses checkout (kemungkinan stok bahan baku habis)');
+    }
+
+    // 3.5. CATAT AKTIVITAS CHECKOUT
+    try {
+      const token = localStorage.getItem('pos_token');
+      if (token) {
+        // Parse payload user_id secara lokal
+        const base64Url = token.split('.')[1];
+        if (base64Url) {
+          const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+          const jsonPayload = decodeURIComponent(atob(base64).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
+          const payload = JSON.parse(jsonPayload);
+          if (payload?.sub) {
+            logActivity(
+              payload.sub,
+              'CHECKOUT',
+              `Transaksi senilai Rp ${totalAmount.toLocaleString('id-ID')} (${paymentMethod}) - ${cartItems.length} item`
+            ).catch(err => console.error("Checkout: Failed to log activity:", err));
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Checkout: Failed to parse user id from token:", e);
+    }
 
     // 4. FIRE-AND-FORGET KE FLASK (AI N-GRAM)
-    // Menggunakan fetch asinkron tanpa 'await' agar UI tetap responsif
-    const flaskApiUrl = import.meta.env.VITE_FLASK_API_URL;
-    if (flaskApiUrl) {
-      fetch(`${flaskApiUrl}/api/ngram/increment`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          items: cartItems.map(item => item.name) 
-        })
-      }).catch(err => console.error("Flask AI Update Failed (Background):", err));
+    // Menggunakan apiClient tanpa 'await' agar UI tetap responsif
+    const itemsList = cartItems.map(item => item.name);
+    if (import.meta.env.DEV) {
+      console.log("Checkout: Dispatching background N-Gram trigger to Flask:", itemsList);
     }
+    
+    // Import or call apiClient dynamically or directly
+    fetch(`${import.meta.env.VITE_FLASK_API_URL || 'http://127.0.0.1:5000'}/api/ngram/increment`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('pos_token') || ''}`
+      },
+      body: JSON.stringify({ items: itemsList })
+    }).then(res => {
+      if (import.meta.env.DEV) console.log("Checkout: Flask background N-Gram response status:", res.status);
+    }).catch(err => console.error("Flask AI Update Failed (Background):", err));
 
     return { success: true };
   } catch (error) {
